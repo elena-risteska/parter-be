@@ -1,10 +1,12 @@
 import pool from "../config/db.js"
 
+const EXPIRATION_MINUTES = 10
+
 export const createReservation = async (req, res) => {
   const { play_id, seats } = req.body
   const user_id = req.user.id
 
-  if (!play_id || !seats || seats.length === 0) {
+  if (!play_id || !Array.isArray(seats) || seats.length === 0) {
     return res.status(400).json({ error: "Play and seats are required" })
   }
 
@@ -13,7 +15,34 @@ export const createReservation = async (req, res) => {
   try {
     await client.query("BEGIN")
 
-    // 1️⃣ Get already reserved seats for this play
+    // 1️⃣ Expire old pending reservations
+    await client.query(`
+      UPDATE reservations
+      SET status = 'expired'
+      WHERE status = 'pending'
+        AND expires_at < NOW()
+    `)
+
+    // 2️⃣ Prevent multiple reservations per play per user
+    const existingRes = await client.query(
+      `
+      SELECT 1
+      FROM reservations
+      WHERE user_id = $1
+        AND play_id = $2
+        AND status IN ('pending', 'confirmed')
+      `,
+      [user_id, play_id]
+    )
+
+    if (existingRes.rows.length > 0) {
+      await client.query("ROLLBACK")
+      return res.status(409).json({
+        error: "You already have a reservation for this play"
+      })
+    }
+
+    // 3️⃣ Lock seats for this play
     const reservedResult = await client.query(
       `
       SELECT seats
@@ -27,9 +56,7 @@ export const createReservation = async (req, res) => {
 
     const reservedSeats = reservedResult.rows.flatMap(r => r.seats)
 
-    // 2️⃣ Check seat conflicts
     const conflict = seats.some(seat => reservedSeats.includes(seat))
-
     if (conflict) {
       await client.query("ROLLBACK")
       return res.status(409).json({
@@ -37,7 +64,7 @@ export const createReservation = async (req, res) => {
       })
     }
 
-    // 3️⃣ Get play price
+    // 4️⃣ Get play price
     const playResult = await client.query(
       "SELECT price FROM plays WHERE id = $1",
       [play_id]
@@ -50,18 +77,23 @@ export const createReservation = async (req, res) => {
 
     const total_price = playResult.rows[0].price * seats.length
 
-    // 4️⃣ Create reservation
+    // 5️⃣ Insert reservation
+    const expiresAt = new Date(
+      Date.now() + EXPIRATION_MINUTES * 60 * 1000
+    )
+
     const insertResult = await client.query(
       `
-      INSERT INTO reservations (user_id, play_id, seats, status, total_price)
-      VALUES ($1, $2, $3, 'pending', $4)
+      INSERT INTO reservations
+        (user_id, play_id, seats, status, total_price, expires_at)
+      VALUES
+        ($1, $2, $3, 'pending', $4, $5)
       RETURNING *
       `,
-      [user_id, play_id, seats, total_price]
+      [user_id, play_id, seats, total_price, expiresAt]
     )
 
     await client.query("COMMIT")
-
     res.status(201).json(insertResult.rows[0])
 
   } catch (err) {
@@ -94,7 +126,7 @@ export const getMyReservations = async (req, res) => {
 
     res.json(result.rows)
   } catch (err) {
-    console.error("Get reservations error:", err.message)
+    console.error(err)
     res.status(500).json({ error: "Failed to fetch reservations" })
   }
 }
@@ -105,7 +137,12 @@ export const getReservationById = async (req, res) => {
 
   try {
     const result = await pool.query(
-      "SELECT * FROM reservations WHERE id = $1 AND user_id = $2",
+      `
+      SELECT *
+      FROM reservations
+      WHERE id = $1
+        AND user_id = $2
+      `,
       [id, userId]
     )
 
@@ -115,7 +152,7 @@ export const getReservationById = async (req, res) => {
 
     res.json(result.rows[0])
   } catch (err) {
-    console.error("Get reservation error:", err.message)
+    console.error(err)
     res.status(500).json({ error: "Failed to fetch reservation" })
   }
 }
@@ -128,6 +165,7 @@ export const getAllReservations = async (req, res) => {
         r.seats,
         r.total_price,
         r.status,
+        r.expires_at,
         r.created_at,
         u.id AS user_id,
         u.email,
@@ -161,24 +199,37 @@ export const updateReservation = async (req, res) => {
   try {
     await client.query("BEGIN")
 
-    // 1️⃣ Get reservation + play_id
+    // 1️⃣ Expire old reservations
+    await client.query(`
+      UPDATE reservations
+      SET status = 'expired'
+      WHERE status = 'pending'
+        AND expires_at < NOW()
+    `)
+
+    // 2️⃣ Get reservation (must be active)
     const reservationRes = await client.query(
       `
       SELECT play_id
       FROM reservations
-      WHERE id = $1 AND user_id = $2
+      WHERE id = $1
+        AND user_id = $2
+        AND status = 'pending'
+        AND expires_at > NOW()
       `,
       [id, userId]
     )
 
     if (reservationRes.rows.length === 0) {
       await client.query("ROLLBACK")
-      return res.status(404).json({ error: "Reservation not found" })
+      return res.status(400).json({
+        error: "Reservation expired or not editable"
+      })
     }
 
     const play_id = reservationRes.rows[0].play_id
 
-    // 2️⃣ Lock existing reservations EXCEPT this one
+    // 3️⃣ Lock other reservations
     const reservedResult = await client.query(
       `
       SELECT seats
@@ -201,15 +252,20 @@ export const updateReservation = async (req, res) => {
       })
     }
 
-    // 3️⃣ Get price
+    // 4️⃣ Get price
     const priceRes = await client.query(
       "SELECT price FROM plays WHERE id = $1",
       [play_id]
     )
 
+    if (priceRes.rows.length === 0) {
+      await client.query("ROLLBACK")
+      return res.status(404).json({ error: "Play not found" })
+    }
+
     const totalPrice = priceRes.rows[0].price * seats.length
 
-    // 4️⃣ Update reservation
+    // 5️⃣ Update reservation
     const updateRes = await client.query(
       `
       UPDATE reservations
@@ -232,7 +288,6 @@ export const updateReservation = async (req, res) => {
   }
 }
 
-
 export const deleteReservation = async (req, res) => {
   const { id } = req.params
   const userId = req.user.id
@@ -254,7 +309,7 @@ export const deleteReservation = async (req, res) => {
 
     res.json({ message: "Reservation cancelled successfully" })
   } catch (err) {
-    console.error("Delete reservation error:", err.message)
+    console.error(err)
     res.status(500).json({ error: "Failed to cancel reservation" })
   }
 }
