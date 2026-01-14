@@ -1,54 +1,75 @@
 import pool from "../config/db.js"
 
 export const createReservation = async (req, res) => {
-  const userId = req.user.id
-  const { playId, seats } = req.body
+  const { play_id, seats } = req.body
+  const user_id = req.user.id
 
-  if (!playId || !Array.isArray(seats) || seats.length === 0) {
+  if (!play_id || !seats || seats.length === 0) {
     return res.status(400).json({ error: "Play and seats are required" })
   }
 
+  const client = await pool.connect()
+
   try {
-    // Check if user already has a reservation for this play
-    const existing = await pool.query(
-      "SELECT id FROM reservations WHERE user_id = $1 AND play_id = $2",
-      [userId, playId]
+    await client.query("BEGIN")
+
+    // 1️⃣ Get already reserved seats for this play
+    const reservedResult = await client.query(
+      `
+      SELECT seats
+      FROM reservations
+      WHERE play_id = $1
+        AND status IN ('pending', 'confirmed')
+      FOR UPDATE
+      `,
+      [play_id]
     )
 
-    if (existing.rows.length > 0) {
-      return res
-        .status(400)
-        .json({ error: "You already have a reservation for this play" })
+    const reservedSeats = reservedResult.rows.flatMap(r => r.seats)
+
+    // 2️⃣ Check seat conflicts
+    const conflict = seats.some(seat => reservedSeats.includes(seat))
+
+    if (conflict) {
+      await client.query("ROLLBACK")
+      return res.status(409).json({
+        error: "One or more seats are already reserved"
+      })
     }
 
-    // Get play price
-    const playRes = await pool.query(
+    // 3️⃣ Get play price
+    const playResult = await client.query(
       "SELECT price FROM plays WHERE id = $1",
-      [playId]
+      [play_id]
     )
 
-    if (playRes.rows.length === 0) {
+    if (playResult.rows.length === 0) {
+      await client.query("ROLLBACK")
       return res.status(404).json({ error: "Play not found" })
     }
 
-    const price = playRes.rows[0].price
-    const totalPrice = price * seats.length
+    const total_price = playResult.rows[0].price * seats.length
 
-    // Create reservation
-    const result = await pool.query(
+    // 4️⃣ Create reservation
+    const insertResult = await client.query(
       `
-      INSERT INTO reservations
-      (user_id, play_id, seats, total_price, expires_at)
-      VALUES ($1, $2, $3, $4, NOW() + INTERVAL '10 minutes')
+      INSERT INTO reservations (user_id, play_id, seats, status, total_price)
+      VALUES ($1, $2, $3, 'pending', $4)
       RETURNING *
       `,
-      [userId, playId, seats, totalPrice]
+      [user_id, play_id, seats, total_price]
     )
 
-    res.status(201).json(result.rows[0])
+    await client.query("COMMIT")
+
+    res.status(201).json(insertResult.rows[0])
+
   } catch (err) {
-    console.error("Create reservation error:", err.message)
-    res.status(500).json({ error: "Failed to create reservation" })
+    await client.query("ROLLBACK")
+    console.error(err)
+    res.status(500).json({ error: "Reservation failed" })
+  } finally {
+    client.release()
   }
 }
 
@@ -135,25 +156,61 @@ export const updateReservation = async (req, res) => {
     return res.status(400).json({ error: "Seats are required" })
   }
 
+  const client = await pool.connect()
+
   try {
-    // Get play price for recalculation
-    const priceRes = await pool.query(
+    await client.query("BEGIN")
+
+    // 1️⃣ Get reservation + play_id
+    const reservationRes = await client.query(
       `
-      SELECT p.price
-      FROM reservations r
-      JOIN plays p ON p.id = r.play_id
-      WHERE r.id = $1 AND r.user_id = $2
+      SELECT play_id
+      FROM reservations
+      WHERE id = $1 AND user_id = $2
       `,
       [id, userId]
     )
 
-    if (priceRes.rows.length === 0) {
+    if (reservationRes.rows.length === 0) {
+      await client.query("ROLLBACK")
       return res.status(404).json({ error: "Reservation not found" })
     }
 
+    const play_id = reservationRes.rows[0].play_id
+
+    // 2️⃣ Lock existing reservations EXCEPT this one
+    const reservedResult = await client.query(
+      `
+      SELECT seats
+      FROM reservations
+      WHERE play_id = $1
+        AND id != $2
+        AND status IN ('pending', 'confirmed')
+      FOR UPDATE
+      `,
+      [play_id, id]
+    )
+
+    const reservedSeats = reservedResult.rows.flatMap(r => r.seats)
+
+    const conflict = seats.some(seat => reservedSeats.includes(seat))
+    if (conflict) {
+      await client.query("ROLLBACK")
+      return res.status(409).json({
+        error: "One or more seats are already reserved"
+      })
+    }
+
+    // 3️⃣ Get price
+    const priceRes = await client.query(
+      "SELECT price FROM plays WHERE id = $1",
+      [play_id]
+    )
+
     const totalPrice = priceRes.rows[0].price * seats.length
 
-    const result = await pool.query(
+    // 4️⃣ Update reservation
+    const updateRes = await client.query(
       `
       UPDATE reservations
       SET seats = $1, total_price = $2
@@ -163,12 +220,18 @@ export const updateReservation = async (req, res) => {
       [seats, totalPrice, id, userId]
     )
 
-    res.json(result.rows[0])
+    await client.query("COMMIT")
+    res.json(updateRes.rows[0])
+
   } catch (err) {
-    console.error("Update reservation error:", err.message)
+    await client.query("ROLLBACK")
+    console.error(err)
     res.status(500).json({ error: "Failed to update reservation" })
+  } finally {
+    client.release()
   }
 }
+
 
 export const deleteReservation = async (req, res) => {
   const { id } = req.params
