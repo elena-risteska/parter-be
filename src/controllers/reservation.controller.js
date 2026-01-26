@@ -1,19 +1,21 @@
-import pool from "../config/db.js"
+import pool from "../config/db.js";
 
-const EXPIRATION_MINUTES = 10
+const EXPIRATION_MINUTES = 10;
 
 export const createReservation = async (req, res) => {
-  const { play_id, seats } = req.body
-  const user_id = req.user.id
+  const { play_id, seats } = req.body;
+  const user_id = req.user.id;
 
   if (!play_id || !Array.isArray(seats) || seats.length === 0) {
-    return res.status(400).json({ error: "Play and seats are required" })
+    return res
+      .status(400)
+      .json({ error: "Избирање претстава и седишта е задолжително" });
   }
 
-  const client = await pool.connect()
+  const client = await pool.connect();
 
   try {
-    await client.query("BEGIN")
+    await client.query("BEGIN");
 
     // 1️⃣ Expire old pending reservations
     await client.query(`
@@ -21,7 +23,7 @@ export const createReservation = async (req, res) => {
       SET status = 'expired'
       WHERE status = 'pending'
         AND expires_at < NOW()
-    `)
+    `);
 
     // 2️⃣ Prevent multiple reservations per play per user
     const existingRes = await client.query(
@@ -32,14 +34,14 @@ export const createReservation = async (req, res) => {
         AND play_id = $2
         AND status IN ('pending', 'confirmed')
       `,
-      [user_id, play_id]
-    )
+      [user_id, play_id],
+    );
 
     if (existingRes.rows.length > 0) {
-      await client.query("ROLLBACK")
+      await client.query("ROLLBACK");
       return res.status(409).json({
-        error: "You already have a reservation for this play"
-      })
+        error: "Веќе имаш резервација за оваа претстава",
+      });
     }
 
     // 3️⃣ Lock seats for this play
@@ -51,36 +53,34 @@ export const createReservation = async (req, res) => {
         AND status IN ('pending', 'confirmed')
       FOR UPDATE
       `,
-      [play_id]
-    )
+      [play_id],
+    );
 
-    const reservedSeats = reservedResult.rows.flatMap(r => r.seats)
+    const reservedSeats = reservedResult.rows.flatMap((r) => r.seats);
 
-    const conflict = seats.some(seat => reservedSeats.includes(seat))
+    const conflict = seats.some((seat) => reservedSeats.includes(seat));
     if (conflict) {
-      await client.query("ROLLBACK")
+      await client.query("ROLLBACK");
       return res.status(409).json({
-        error: "One or more seats are already reserved"
-      })
+        error: "Некое од седиштата е веќе резервирано",
+      });
     }
 
     // 4️⃣ Get play price
     const playResult = await client.query(
       "SELECT price FROM plays WHERE id = $1",
-      [play_id]
-    )
+      [play_id],
+    );
 
     if (playResult.rows.length === 0) {
-      await client.query("ROLLBACK")
-      return res.status(404).json({ error: "Play not found" })
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Претставата не е пронајдена" });
     }
 
-    const total_price = playResult.rows[0].price * seats.length
+    const total_price = playResult.rows[0].price * seats.length;
 
     // 5️⃣ Insert reservation
-    const expiresAt = new Date(
-      Date.now() + EXPIRATION_MINUTES * 60 * 1000
-    )
+    const expiresAt = new Date(Date.now() + EXPIRATION_MINUTES * 60 * 1000);
 
     const insertResult = await client.query(
       `
@@ -90,23 +90,22 @@ export const createReservation = async (req, res) => {
         ($1, $2, $3, 'pending', $4, $5)
       RETURNING *
       `,
-      [user_id, play_id, seats, total_price, expiresAt]
-    )
+      [user_id, play_id, seats, total_price, expiresAt],
+    );
 
-    await client.query("COMMIT")
-    res.status(201).json(insertResult.rows[0])
-
+    await client.query("COMMIT");
+    res.status(201).json(insertResult.rows[0]);
   } catch (err) {
-    await client.query("ROLLBACK")
-    console.error(err)
-    res.status(500).json({ error: "Reservation failed" })
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(500).json({ error: "Резервацијата не успеа" });
   } finally {
-    client.release()
+    client.release();
   }
-}
+};
 
 export const getMyReservations = async (req, res) => {
-  const userId = req.user.id
+  const userId = req.user.id;
 
   try {
     const result = await pool.query(
@@ -121,19 +120,19 @@ export const getMyReservations = async (req, res) => {
       WHERE r.user_id = $1
       ORDER BY r.created_at DESC
       `,
-      [userId]
-    )
+      [userId],
+    );
 
-    res.json(result.rows)
+    res.json(result.rows);
   } catch (err) {
-    console.error(err)
-    res.status(500).json({ error: "Failed to fetch reservations" })
+    console.error(err);
+    res.status(500).json({ error: "Неуспешно преземање на резервациите" });
   }
-}
+};
 
 export const getReservationById = async (req, res) => {
-  const { id } = req.params
-  const userId = req.user.id
+  const { id } = req.params;
+  const userId = req.user.id;
 
   try {
     const result = await pool.query(
@@ -143,19 +142,19 @@ export const getReservationById = async (req, res) => {
       WHERE id = $1
         AND user_id = $2
       `,
-      [id, userId]
-    )
+      [id, userId],
+    );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Reservation not found" })
+      return res.status(404).json({ error: "Резервацијата не е пронајдена" });
     }
 
-    res.json(result.rows[0])
+    res.json(result.rows[0]);
   } catch (err) {
-    console.error(err)
-    res.status(500).json({ error: "Failed to fetch reservation" })
+    console.error(err);
+    res.status(500).json({ error: "Неуспешно преземање на резервациите" });
   }
-}
+};
 
 export const getAllReservations = async (req, res) => {
   try {
@@ -176,38 +175,51 @@ export const getAllReservations = async (req, res) => {
       JOIN users u ON r.user_id = u.id
       JOIN plays p ON r.play_id = p.id
       ORDER BY r.created_at DESC
-    `)
+    `);
 
-    res.json(result.rows)
+    res.json(result.rows);
   } catch (err) {
-    console.error(err)
-    res.status(500).json({ error: "Failed to fetch reservations" })
+    console.error(err);
+    res.status(500).json({ error: "Неуспешно преземање на резервациите" });
   }
-}
+};
+
+export const getReservedSeatsByPlay = async (req, res) => {
+  const { playId } = req.params;
+
+  const result = await pool.query(
+    `
+    SELECT seats
+    FROM reservations
+    WHERE play_id = $1
+    `,
+    [playId],
+  );
+
+  res.json(result.rows);
+};
 
 export const updateReservation = async (req, res) => {
-  const { id } = req.params
-  const { seats } = req.body
-  const userId = req.user.id
+  const { id } = req.params;
+  const { seats } = req.body;
+  const userId = req.user.id;
 
   if (!Array.isArray(seats) || seats.length === 0) {
-    return res.status(400).json({ error: "Seats are required" })
+    return res.status(400).json({ error: "Избирање седишта е задолжително" });
   }
 
-  const client = await pool.connect()
+  const client = await pool.connect();
 
   try {
-    await client.query("BEGIN")
+    await client.query("BEGIN");
 
-    // 1️⃣ Expire old reservations
     await client.query(`
       UPDATE reservations
       SET status = 'expired'
       WHERE status = 'pending'
         AND expires_at < NOW()
-    `)
+    `);
 
-    // 2️⃣ Get reservation (must be active)
     const reservationRes = await client.query(
       `
       SELECT play_id
@@ -217,19 +229,18 @@ export const updateReservation = async (req, res) => {
         AND status = 'pending'
         AND expires_at > NOW()
       `,
-      [id, userId]
-    )
+      [id, userId],
+    );
 
     if (reservationRes.rows.length === 0) {
-      await client.query("ROLLBACK")
+      await client.query("ROLLBACK");
       return res.status(400).json({
-        error: "Reservation expired or not editable"
-      })
+        error: "Резервацијата истече или не може да се менува",
+      });
     }
 
-    const play_id = reservationRes.rows[0].play_id
+    const play_id = reservationRes.rows[0].play_id;
 
-    // 3️⃣ Lock other reservations
     const reservedResult = await client.query(
       `
       SELECT seats
@@ -239,33 +250,31 @@ export const updateReservation = async (req, res) => {
         AND status IN ('pending', 'confirmed')
       FOR UPDATE
       `,
-      [play_id, id]
-    )
+      [play_id, id],
+    );
 
-    const reservedSeats = reservedResult.rows.flatMap(r => r.seats)
+    const reservedSeats = reservedResult.rows.flatMap((r) => r.seats);
 
-    const conflict = seats.some(seat => reservedSeats.includes(seat))
+    const conflict = seats.some((seat) => reservedSeats.includes(seat));
     if (conflict) {
-      await client.query("ROLLBACK")
+      await client.query("ROLLBACK");
       return res.status(409).json({
-        error: "One or more seats are already reserved"
-      })
+        error: "Некое од седиштата е веќе резервирано",
+      });
     }
 
-    // 4️⃣ Get price
     const priceRes = await client.query(
       "SELECT price FROM plays WHERE id = $1",
-      [play_id]
-    )
+      [play_id],
+    );
 
     if (priceRes.rows.length === 0) {
-      await client.query("ROLLBACK")
-      return res.status(404).json({ error: "Play not found" })
+      await client.query("ROLLBACK");
+      return res.status(404).json({ error: "Претставата не е пронајдена" });
     }
 
-    const totalPrice = priceRes.rows[0].price * seats.length
+    const totalPrice = priceRes.rows[0].price * seats.length;
 
-    // 5️⃣ Update reservation
     const updateRes = await client.query(
       `
       UPDATE reservations
@@ -273,24 +282,23 @@ export const updateReservation = async (req, res) => {
       WHERE id = $3 AND user_id = $4
       RETURNING *
       `,
-      [seats, totalPrice, id, userId]
-    )
+      [seats, totalPrice, id, userId],
+    );
 
-    await client.query("COMMIT")
-    res.json(updateRes.rows[0])
-
+    await client.query("COMMIT");
+    res.json(updateRes.rows[0]);
   } catch (err) {
-    await client.query("ROLLBACK")
-    console.error(err)
-    res.status(500).json({ error: "Failed to update reservation" })
+    await client.query("ROLLBACK");
+    console.error(err);
+    res.status(500).json({ error: "Неуспешна измена на резервацијата" });
   } finally {
-    client.release()
+    client.release();
   }
-}
+};
 
 export const deleteReservation = async (req, res) => {
-  const { id } = req.params
-  const userId = req.user.id
+  const { id } = req.params;
+  const userId = req.user.id;
 
   try {
     const result = await pool.query(
@@ -300,16 +308,16 @@ export const deleteReservation = async (req, res) => {
       WHERE id = $1 AND user_id = $2
       RETURNING *
       `,
-      [id, userId]
-    )
+      [id, userId],
+    );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: "Reservation not found" })
+      return res.status(404).json({ error: "Резервацијата не е пронајдена" });
     }
 
-    res.json({ message: "Reservation cancelled successfully" })
+    res.json({ message: "Резервацијата е успешно откажана" });
   } catch (err) {
-    console.error(err)
-    res.status(500).json({ error: "Failed to cancel reservation" })
+    console.error(err);
+    res.status(500).json({ error: "Грешка при откажувањето на резервацијата" });
   }
-}
+};

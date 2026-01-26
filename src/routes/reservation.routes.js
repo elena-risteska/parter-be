@@ -1,22 +1,24 @@
-import express from "express"
+import express from "express";
 import {
   createReservation,
   getMyReservations,
   getReservationById,
- getAllReservations,
+  getAllReservations,
   updateReservation,
-  deleteReservation
-} from "../controllers/reservation.controller.js"
+  deleteReservation,
+  getReservedSeatsByPlay,
+} from "../controllers/reservation.controller.js";
 
-import { protect } from "../middleware/auth.middleware.js"
+import { protect } from "../middleware/auth.middleware.js";
 
-const router = express.Router()
+const router = express.Router();
 
-router.post("/", protect, createReservation)
-router.get("/me", protect, getMyReservations)
-router.get("/:id", protect, getReservationById)
-router.get("/", protect, getAllReservations)
-router.put("/:id", protect, updateReservation)
-router.delete("/:id", protect, deleteReservation)
+router.post("/", protect, createReservation);
+router.get("/me", protect, getMyReservations);
+router.get("/:id", protect, getReservationById);
+router.get("/", protect, getAllReservations);
+router.get("/play/:playId", protect, getReservedSeatsByPlay);
+router.put("/:id", protect, updateReservation);
+router.delete("/:id", protect, deleteReservation);
 
-export default router
+export default router;

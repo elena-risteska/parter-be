@@ -85,9 +85,8 @@ export const forgotPassword = async (req, res) => {
   try {
     const info = await sendEmail({
       to: email,
-      subject: "prati se te molam",
+      subject: "Password reset",
       html: `
-        <h2>Password Reset</h2>
         <p>Your verification code is:</p>
         <h1 style="letter-spacing: 4px;">${code}</h1>
         <p>This code expires in 10 minutes.</p>
