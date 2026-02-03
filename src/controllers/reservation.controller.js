@@ -3,6 +3,9 @@ import pool from "../config/db.js";
 const EXPIRATION_MINUTES = 10;
 
 export const createReservation = async (req, res) => {
+  if (!req.user || !req.user.id) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
   const { play_id, seats } = req.body;
   const user_id = req.user.id;
 
@@ -168,6 +171,8 @@ export const getAllReservations = async (req, res) => {
         r.created_at,
         u.id AS user_id,
         u.email,
+        u.first_name,
+        u.last_name,
         p.title,
         p.date,
         p.time
@@ -192,6 +197,7 @@ export const getReservedSeatsByPlay = async (req, res) => {
     SELECT seats
     FROM reservations
     WHERE play_id = $1
+      AND status IN ('pending', 'confirmed')
     `,
     [playId],
   );

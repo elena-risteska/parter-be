@@ -3,22 +3,22 @@ import {
   createReservation,
   getMyReservations,
   getReservationById,
-  getAllReservations,
-  updateReservation,
   deleteReservation,
+  getAllReservations,
   getReservedSeatsByPlay,
 } from "../controllers/reservation.controller.js";
-
-import { protect } from "../middleware/auth.middleware.js";
+import { protect, adminOnly } from "../middleware/auth.middleware.js";
 
 const router = express.Router();
 
+// 🔐 USER
 router.post("/", protect, createReservation);
-router.get("/me", protect, getMyReservations);
+router.get("/", protect, getMyReservations);
 router.get("/:id", protect, getReservationById);
-router.get("/", protect, getAllReservations);
 router.get("/play/:playId", protect, getReservedSeatsByPlay);
-router.put("/:id", protect, updateReservation);
 router.delete("/:id", protect, deleteReservation);
+
+// 🔐 ADMIN ONLY
+router.get("/admin/all", protect, adminOnly, getAllReservations);
 
 export default router;

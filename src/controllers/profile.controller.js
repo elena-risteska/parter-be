@@ -20,16 +20,22 @@ export const getProfile = async (req, res) => {
 export const updateProfile = async (req, res) => {
   const userId = req.user.id;
   const { firstName, lastName } = req.body;
+
   try {
     const result = await pool.query(
       `
       UPDATE users
       SET first_name = $1, last_name = $2
-      WHERE id = $4
+      WHERE id = $3
       RETURNING id, first_name, last_name, email
       `,
       [firstName, lastName, userId],
     );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "User not found" });
+    }
+
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
