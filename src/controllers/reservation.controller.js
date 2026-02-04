@@ -304,26 +304,20 @@ export const updateReservation = async (req, res) => {
 
 export const deleteReservation = async (req, res) => {
   const { id } = req.params;
-  const userId = req.user.id;
 
   try {
     const result = await pool.query(
-      `
-      UPDATE reservations
-      SET status = 'cancelled'
-      WHERE id = $1 AND user_id = $2
-      RETURNING *
-      `,
-      [id, userId],
+      `DELETE FROM reservations WHERE id = $1 RETURNING *`,
+      [id],
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ error: "Резервацијата не е пронајдена" });
     }
 
-    res.json({ message: "Резервацијата е успешно откажана" });
+    res.json({ message: "Резервацијата е успешно избришана" });
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Грешка при откажувањето на резервацијата" });
+    res.status(500).json({ error: "Грешка при бришењето на резервацијата" });
   }
 };
